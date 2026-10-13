@@ -20,7 +20,7 @@ from pypdf import PdfReader
 # --------------------------------------------------------------------------
 # Config
 # --------------------------------------------------------------------------
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-2.6-flash"
 MAX_RESUME_CHARS = 30_000
 MAX_JD_CHARS = 10_000
 MIN_RESUME_CHARS = 150
