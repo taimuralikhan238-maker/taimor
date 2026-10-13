@@ -20,7 +20,10 @@ from pypdf import PdfReader
 # --------------------------------------------------------------------------
 # Config
 # --------------------------------------------------------------------------
-DEFAULT_MODEL = "gemini-2.6-flash"
+# "gemini-flash-latest" always points to Google's newest stable Flash model.
+DEFAULT_MODEL = "gemini-flash-latest"
+# Tried in order if the chosen model name does not exist (HTTP 404).
+FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.5-flash"]
 MAX_RESUME_CHARS = 30_000
 MAX_JD_CHARS = 10_000
 MIN_RESUME_CHARS = 150
@@ -179,6 +182,32 @@ Respond with ONLY a valid JSON object in exactly this shape (no markdown, no com
 {JSON_SHAPE}"""
 
 
+def _is_model_not_found(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "404" in msg or "not_found" in msg or "is not found" in msg
+
+
+def generate_with_fallback(client, model: str, contents, config):
+    """Call Gemini; if the model name doesn't exist, try known-good fallbacks.
+
+    Returns (response, model_actually_used).
+    """
+    candidates = [model] + [m for m in FALLBACK_MODELS if m != model]
+    last_error = None
+    for name in candidates:
+        try:
+            return client.models.generate_content(model=name, contents=contents, config=config), name
+        except Exception as exc:
+            if _is_model_not_found(exc):
+                last_error = exc
+                continue
+            raise
+    raise RuntimeError(
+        f"Model '{model}' was not found, and the fallback models failed too. "
+        f"Try 'gemini-flash-latest' or 'gemini-2.5-flash' in the sidebar. ({last_error})"
+    )
+
+
 def ocr_with_gemini(api_key: str, model: str, data: bytes, mime_type: str) -> str:
     """Read text from a scanned PDF / image using Gemini's vision capability."""
     client = genai.Client(api_key=api_key)
@@ -191,12 +220,15 @@ def ocr_with_gemini(api_key: str, model: str, data: bytes, mime_type: str) -> st
     last_error = None
     for attempt in range(2):
         try:
-            response = client.models.generate_content(
-                model=model,
-                contents=[types.Part.from_bytes(data=data, mime_type=mime_type), instruction],
-                config=config,
+            response, _ = generate_with_fallback(
+                client,
+                model,
+                [types.Part.from_bytes(data=data, mime_type=mime_type), instruction],
+                config,
             )
             return clean_text(response.text or "")
+        except RuntimeError:
+            raise
         except Exception as exc:
             message = str(exc).lower()
             if any(s in message for s in ("api key", "api_key", "permission", "unauthenticated", "401", "403")):
@@ -296,10 +328,14 @@ def analyze_resume(api_key: str, model: str, resume_text: str, job_description: 
     last_error = None
     for attempt in range(3):
         try:
-            response = client.models.generate_content(model=model, contents=prompt, config=config)
-            return normalize_analysis(parse_json_response(response.text))
+            response, used_model = generate_with_fallback(client, model, prompt, config)
+            result = normalize_analysis(parse_json_response(response.text))
+            result["model_used"] = used_model
+            return result
         except ValueError as exc:  # bad / empty JSON -> retry
             last_error = exc
+        except RuntimeError:
+            raise
         except Exception as exc:  # network, quota, auth ...
             message = str(exc).lower()
             if any(s in message for s in ("api key", "api_key", "permission", "unauthenticated", "401", "403")):
@@ -425,7 +461,12 @@ def main() -> None:
             type="password",
             help="Get a free key at https://aistudio.google.com/apikey. Not stored anywhere.",
         )
-        model = st.text_input("Model", value=DEFAULT_MODEL, help="Any Gemini Flash model name.")
+        model = st.text_input(
+            "Model",
+            value=DEFAULT_MODEL,
+            help="Valid examples: gemini-flash-latest, gemini-2.5-flash, gemini-3.5-flash. "
+            "If the name is wrong, the app falls back automatically.",
+        )
         st.caption("Your resume text is sent to Google's Gemini API for analysis.")
 
     uploaded = st.file_uploader("Upload resume", type=["pdf", "docx", "txt", "png", "jpg", "jpeg"])
@@ -481,6 +522,9 @@ def main() -> None:
             st.error(str(exc))
             st.stop()
 
+        chosen = model.strip() or DEFAULT_MODEL
+        if result.get("model_used") and result["model_used"] != chosen:
+            st.info(f"Model '{chosen}' wasn't found, so '{result['model_used']}' was used instead.")
         st.session_state["result"] = result
 
     if "result" in st.session_state:
