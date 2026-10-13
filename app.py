@@ -24,6 +24,7 @@ DEFAULT_MODEL = "gemini-2.5-flash"
 MAX_RESUME_CHARS = 30_000
 MAX_JD_CHARS = 10_000
 MIN_RESUME_CHARS = 150
+IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 
 # Overall score = weighted average of these category scores (each 0-100).
 CATEGORY_WEIGHTS = {
@@ -89,9 +90,19 @@ def extract_resume_text(filename: str, data: bytes) -> str:
         text = extract_text_from_docx(data)
     elif name.endswith(".txt"):
         text = data.decode("utf-8", errors="ignore")
+    elif name.endswith(tuple(IMAGE_MIME)):
+        text = ""  # images have no text layer; handled by the OCR fallback
     else:
-        raise ValueError("Unsupported file type. Please upload a PDF, DOCX or TXT file.")
+        raise ValueError("Unsupported file type. Please upload a PDF, DOCX, TXT, PNG or JPG file.")
     return clean_text(text)
+
+
+def guess_mime(filename: str) -> str:
+    name = filename.lower()
+    for ext, mime in IMAGE_MIME.items():
+        if name.endswith(ext):
+            return mime
+    return "application/pdf"
 
 
 # --------------------------------------------------------------------------
@@ -166,6 +177,33 @@ RESUME:
 
 Respond with ONLY a valid JSON object in exactly this shape (no markdown, no commentary):
 {JSON_SHAPE}"""
+
+
+def ocr_with_gemini(api_key: str, model: str, data: bytes, mime_type: str) -> str:
+    """Read text from a scanned PDF / image using Gemini's vision capability."""
+    client = genai.Client(api_key=api_key)
+    config = types.GenerateContentConfig(temperature=0.0)
+    instruction = (
+        "Transcribe ALL text in this resume exactly as written, in natural reading order. "
+        "Keep section headings and bullet points on separate lines. "
+        "Output only the transcribed text - no commentary, no markdown fences."
+    )
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=[types.Part.from_bytes(data=data, mime_type=mime_type), instruction],
+                config=config,
+            )
+            return clean_text(response.text or "")
+        except Exception as exc:
+            message = str(exc).lower()
+            if any(s in message for s in ("api key", "api_key", "permission", "unauthenticated", "401", "403")):
+                raise RuntimeError("Gemini rejected the API key. Please check it and try again.") from exc
+            last_error = exc
+            time.sleep(1.5)
+    raise RuntimeError(f"Could not read the scanned file: {last_error}")
 
 
 def parse_json_response(text: str) -> dict:
@@ -390,7 +428,7 @@ def main() -> None:
         model = st.text_input("Model", value=DEFAULT_MODEL, help="Any Gemini Flash model name.")
         st.caption("Your resume text is sent to Google's Gemini API for analysis.")
 
-    uploaded = st.file_uploader("Upload resume", type=["pdf", "docx", "txt"])
+    uploaded = st.file_uploader("Upload resume", type=["pdf", "docx", "txt", "png", "jpg", "jpeg"])
     job_description = st.text_area(
         "Job description (optional, but gives a much more accurate keyword score)",
         height=160,
@@ -410,12 +448,31 @@ def main() -> None:
             st.error(f"Could not read the file: {exc}")
             st.stop()
 
+        used_ocr = False
+        if len(resume_text) < MIN_RESUME_CHARS and not uploaded.name.lower().endswith((".docx", ".txt")):
+            try:
+                with st.spinner("No selectable text found - reading the file with Gemini (OCR)..."):
+                    resume_text = ocr_with_gemini(
+                        api_key, model.strip() or DEFAULT_MODEL, uploaded.getvalue(), guess_mime(uploaded.name)
+                    )
+                used_ocr = True
+            except Exception as exc:
+                st.error(str(exc))
+                st.stop()
+
         if len(resume_text) < MIN_RESUME_CHARS:
             st.error(
-                "Very little text could be extracted. If your resume is a scanned image or "
-                "photo, an ATS can't read it either - export a text-based PDF or DOCX instead."
+                "Very little text could be read from this file, even with OCR. Please upload a "
+                "clearer file, or export a text-based PDF or DOCX."
             )
             st.stop()
+
+        if used_ocr:
+            st.warning(
+                "Your file had no selectable text (scanned or image-based), so Gemini read it visually. "
+                "Real ATS software can't do this and would likely reject or misread this file - "
+                "export a text-based PDF or DOCX before applying."
+            )
 
         try:
             with st.spinner("Analysing with Gemini..."):
