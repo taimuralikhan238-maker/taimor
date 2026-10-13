@@ -1,6 +1,6 @@
 # 📄 AI Resume ATS Analyzer
 
-Upload a resume (PDF, DOCX or TXT), optionally paste a job description, and get:
+Upload a resume (PDF, DOCX, TXT, or a PNG/JPG photo), optionally paste a job description, and get:
 
 - An **estimated ATS score** (0-100) with a 5-part breakdown
 - **Matched and missing keywords**
@@ -64,6 +64,6 @@ README.md
 
 ## Notes
 
-- Scanned or image-only resumes have no extractable text - export a text-based PDF/DOCX.
+- Scanned or image-only resumes are read by Gemini (OCR) automatically, but real ATS software can't do that - export a text-based PDF/DOCX before applying.
 - Resume text is sent to Google's Gemini API. Don't upload anything you aren't comfortable sharing.
 - The default model is `gemini-2.5-flash`; change it in the sidebar if you prefer another Flash model.
