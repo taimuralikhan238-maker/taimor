@@ -66,4 +66,4 @@ README.md
 
 - Scanned or image-only resumes are read by Gemini (OCR) automatically, but real ATS software can't do that - export a text-based PDF/DOCX before applying.
 - Resume text is sent to Google's Gemini API. Don't upload anything you aren't comfortable sharing.
-- The default model is `gemini-2.5-flash`; change it in the sidebar if you prefer another Flash model.
+- The default model is `gemini-flash-latest` (always Google's newest stable Flash). You can change it in the sidebar, e.g. `gemini-2.5-flash`. If a model name is wrong, the app automatically falls back to a working one.
